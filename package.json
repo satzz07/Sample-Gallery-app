@@ -1,17 +1,14 @@
 {
-  "name": "gallery",
+  "name": "code-engine-gallery",
   "version": "1.0.0",
-  "description": "This tutorial demonstrates how to build an Image Gallery that demonstrates how multiple Code Engine components can be used together in order to build a complex software solution.",
-  "main": "index.js",
-  "directories": {
-    "doc": "docs"
-  },
+  "description": "Sample app to demonstrate power of Code Engine components",
+  "main": "app.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "author": "",
-  "license": "ISC",
+  "license": "MIT",
   "dependencies": {
-    "ibm-cos-sdk": "^1.13.4"
+    "ibm-cos-sdk": "^1.13.1"
   }
 }
