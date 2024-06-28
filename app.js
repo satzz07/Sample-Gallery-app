@@ -3,15 +3,13 @@
 const { createServer } = require("http");
 const { readFileSync } = require("fs");
 const { CosService } = require("./cos-service");
+const { changeColors } = require("./colorizer");
 
 const basePath = __dirname; // serving files from here
 
 const getCosConfig = () => {
-  const endpoint =
-    process.env.CLOUD_OBJECT_STORAGE_ENDPOINT ||
-    "s3.eu-de.cloud-object-storage.appdomain.cloud";
-  const serviceInstanceId =
-    process.env.CLOUD_OBJECT_STORAGE_RESOURCE_INSTANCE_ID;
+  const endpoint = process.env.CLOUD_OBJECT_STORAGE_ENDPOINT || "s3.eu-de.cloud-object-storage.appdomain.cloud";
+  const serviceInstanceId = process.env.CLOUD_OBJECT_STORAGE_RESOURCE_INSTANCE_ID;
   const apiKeyId = process.env.CLOUD_OBJECT_STORAGE_APIKEY;
   console.log(
     `getCosConfig - endpoint: '${endpoint}', serviceInstanceId: ${serviceInstanceId}, apiKeyId: '${
@@ -30,28 +28,6 @@ const getCosConfig = () => {
 let cosService;
 if (process.env.CLOUD_OBJECT_STORAGE_APIKEY) {
   cosService = new CosService(getCosConfig());
-}
-
-function getFunctionEndpoint() {
-  if (!process.env.COLORIZER) {
-    return undefined;
-  }
-  return `https://${process.env.COLORIZER}.${process.env.CE_SUBDOMAIN}.${process.env.CE_DOMAIN}`;
-}
-
-async function invokeColorizeFunction(imageId) {
-  const colorizedResponse = await fetch(getFunctionEndpoint(), {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: `{"imageId": "${imageId}"}`,
-  });
-  const colorized = await colorizedResponse.json();
-  if (colorized.error) {
-    throw new Error(colorized.error);
-  }
-  return colorized;
 }
 
 const mimetypeByExtension = Object.assign(Object.create(null), {
@@ -94,18 +70,14 @@ function handleHttpReq(req, res) {
         bucket: process.env.BUCKET,
         interval: parseInt(process.env.CHECK_INTERVAL) || 1_000,
       };
-    }
-    if (process.env.COLORIZER) {
-      enabledFeatures.colorizer = {
-        fn: getFunctionEndpoint(),
-      };
+      enabledFeatures.colorizer = true
     }
     res.write(JSON.stringify(enabledFeatures));
     res.end();
     return;
   }
 
-  // This handler passes the req payload to a function that is in charge to colorize it
+  // This handler passes the req payload to a colorizer function that is in charge to colorize it
   if (reqPath === "/change-colors") {
     req.on("error", (err) => {
       console.log(`Error reading body: ${err.message}`);
@@ -117,29 +89,46 @@ function handleHttpReq(req, res) {
     req.on("data", (chunkBuf) => {
       bodyBuf = Buffer.concat([bodyBuf, chunkBuf]);
     });
-    req.on("end", () => {
+    req.on("end", async () => {
       const payloadStr = bodyBuf.toString("utf-8");
       console.log(`received '${payloadStr}' as input data`);
       const payload = JSON.parse(payloadStr);
 
-      invokeColorizeFunction(payload.imageId)
-        .then((response) => {
-          console.log(
-            `Colorizer function has been invoked successfully: '${JSON.stringify(
-              response
-            )}'`
-          );
-          res.statusCode = 200;
-          res.end();
-        })
-        .catch((reason) => {
-          console.error(`Error colorizing image '${payload.imageId}'`, reason);
-          res.statusCode = 503;
-          res.end(
-            `Error changing color of image '${payload.imageId}': ${reason}`
-          );
-          return;
-        });
+      const bucket = process.env.BUCKET;
+      const imageId = payload.imageId;
+
+      try {
+        // Fetch the object that should get transformed
+        const fileStream = await cosService.getObjectAsStream(bucket, imageId);
+        console.log(`Downloaded '${imageId}'`);
+
+        // Convert the image stream to a buffer
+        const imageBuf = await streamToBuffer(fileStream);
+        console.log(`Converted to a buffer of size ${(imageBuf.length / 1024).toFixed(1)} KB`);
+
+        // Change the color tokens of the image
+        const updatedImageBuf = await changeColors(imageBuf);
+        console.log(`Adjusted colors of '${imageId}' - new size ${(updatedImageBuf.length / 1024).toFixed(1)} KB`);
+
+        // SIXTH upload the adjusted image back into the COS bucket
+        await cosService.createObject(
+          bucket,
+          imageId,
+          updatedImageBuf,
+          cosService.getContentTypeFromFileName(imageId),
+          updatedImageBuf.contentLength
+        );
+        console.log(`Uploaded updated '${imageId}'`);
+
+        console.log(`Colorizer function has been invoked successfully: '${JSON.stringify(response)}'`);
+        res.statusCode = 200;
+        res.end();
+      } catch (reason) {
+        console.error(`Error colorizing image '${payload.imageId}'`, reason);
+        res.statusCode = 503;
+        res.end(`Error changing color of image '${payload.imageId}': ${reason}`);
+        return;
+      }
     });
     return;
   }
@@ -158,27 +147,20 @@ function handleHttpReq(req, res) {
       bodyBuf = Buffer.concat([bodyBuf, chunkBuf]);
     });
     req.on("end", () => {
-      console.log(
-        `received ${bodyBuf.toString("base64").length} chars as input data`
-      )
-        cosService
-          .createObject(
-            process.env.BUCKET,
-            `gallery-pic-${Date.now()}.png`,
-            bodyBuf,
-            "image/png"
-          )
-          .then((thumbnail) => {
-            res.setHeader("Content-Type", "application/json");
-            res.statusCode = 200;
-            res.end(`{"done": "true"}`);
-          })
-          .catch((reason) => {
-            console.log(`Error uploading picture: ${reason}`);
-            res.statusCode = 503;
-            res.end(`Error uploading picture: ${reason}`);
-            return;
-          });
+      console.log(`received ${bodyBuf.toString("base64").length} chars as input data`);
+      cosService
+        .createObject(process.env.BUCKET, `gallery-pic-${Date.now()}.png`, bodyBuf, "image/png")
+        .then((thumbnail) => {
+          res.setHeader("Content-Type", "application/json");
+          res.statusCode = 200;
+          res.end(`{"done": "true"}`);
+        })
+        .catch((reason) => {
+          console.log(`Error uploading picture: ${reason}`);
+          res.statusCode = 503;
+          res.end(`Error uploading picture: ${reason}`);
+          return;
+        });
     });
     return;
   }
@@ -217,10 +199,7 @@ function handleHttpReq(req, res) {
         });
       })
       .then((toBeDeletedObjects) => {
-        return cosService.deleteBucketObjects(
-          process.env.BUCKET,
-          toBeDeletedObjects
-        );
+        return cosService.deleteBucketObjects(process.env.BUCKET, toBeDeletedObjects);
       })
       .then(() => {
         res.setHeader("Content-Type", "application/json");
@@ -273,10 +252,7 @@ function handleHttpReq(req, res) {
     res.end(`Error reading file: ${err.message}`);
     return;
   }
-  res.setHeader(
-    "Content-Type",
-    mimetypeByExtension[(reqPath.match(/\.([^.]+)$/) || [])[1]] || "text/plain"
-  );
+  res.setHeader("Content-Type", mimetypeByExtension[(reqPath.match(/\.([^.]+)$/) || [])[1]] || "text/plain");
   res.statusCode = 200;
   res.end(pageContent);
 }
@@ -288,9 +264,9 @@ setTimeout(() => {
   });
 }, 30000);
 
-process.on('SIGTERM', () => {
-  console.info('SIGTERM signal received.');
+process.on("SIGTERM", () => {
+  console.info("SIGTERM signal received.");
   server.close(() => {
-    console.log('Http server closed.');
+    console.log("Http server closed.");
   });
 });
