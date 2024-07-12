@@ -3,7 +3,7 @@
 const { createServer } = require("http");
 const { readFileSync } = require("fs");
 const { CosService } = require("./cos-service");
-const { changeColors } = require("./colorizer");
+const { changeColors, streamToBuffer } = require("./colorizer");
 
 const basePath = __dirname; // serving files from here
 

@@ -31,6 +31,19 @@ function changeColors(imgDataBuf) {
   });
 }
 
+const streamToBuffer = (inputStream) => {
+  return new Promise((resolve, reject) => {
+    const bufs = [];
+    inputStream.on("data", function (d) {
+      bufs.push(d);
+    });
+    inputStream.on("end", function () {
+      const buf = Buffer.concat(bufs);
+      resolve(buf);
+    });
+  });
+};
+
 function pngToCanvas(pngDataBuf) {
   // parse PNG format
   let ihdr;
@@ -107,7 +120,7 @@ function pngToCanvas(pngDataBuf) {
   };
   return canvas;
 
-  function readIhdrFromChunkData(chunkData) {
+function readIhdrFromChunkData(chunkData) {
     let offset = 0;
     const width = chunkData.readUInt32BE(offset);
     offset += 4;
@@ -345,4 +358,4 @@ function calculateCrcForBufferFactory() {
   }
 }
 
-module.exports = { changeColors }
+module.exports = { changeColors, streamToBuffer }
